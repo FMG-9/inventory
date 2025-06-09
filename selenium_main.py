@@ -183,6 +183,13 @@ try:
     max_attempts = 5
     for attempt in range(1, max_attempts + 1):
         print(f'驗證碼嘗試第 {attempt} 次...')
+        if attempt > 1:
+            try:
+                old_img = driver.find_element(By.ID, 'imgCaptcha')
+                wait.until(EC.staleness_of(old_img))
+            except Exception:
+                # 如果圖片已經消失，直接等待新圖片出現
+                pass
         wait.until(EC.presence_of_element_located((By.ID, 'imgCaptcha')))
         time.sleep(1)  # 確保圖片完全載入
         img_base64 = driver.find_element(By.ID, 'imgCaptcha').get_attribute('src')
@@ -210,23 +217,58 @@ try:
         captcha_input.clear()
         captcha_input.send_keys(captcha_text)
         time.sleep(1)
-        # 只送出第一個申請按鈕即可
-        submit_btn = btns[0]
-        driver.execute_script("arguments[0].click();", submit_btn)
+        # 送出驗證碼，點擊驗證碼區塊下方的「申請」按鈕（通常是最後一個）
+        app_buttons = driver.find_elements(By.XPATH, "//button[contains(text(), '申請')]")
+        app_buttons[-1].click()
         print('已自動送出驗證碼')
         time.sleep(3)
         page_source = driver.page_source
+        # 先判斷是否有驗證碼錯誤訊息
+        try:
+            captcha_err = driver.find_element(By.ID, 'hfCaptchaErrMsg').get_attribute('value')
+        except Exception:
+            captcha_err = ''
+        if captcha_err and '不通過' in captcha_err:
+            print('驗證碼錯誤，重試...')
+            continue
+        # 再判斷是否預約成功
         if 'MainContent_AppPlaceTB' in page_source and FIELD in page_source and RESERVE_DATE.replace('/', '') in page_source:
             print('預約成功，已加入申請列表！')
+            print('驗證碼正確，準備自動填寫借用原因...')
             # 預約成功後等待3秒再填寫借用原因
             time.sleep(3)
             try:
-                # 直接用 id 精準填寫借用原因
-                reason_input = driver.find_element(By.ID, 'MainContent_ReasonTextBox1')
-                driver.execute_script("arguments[0].value = '運動'", reason_input)
+                # 先嘗試用 id
+                reason_input = wait.until(EC.element_to_be_clickable((By.ID, 'MainContent_ReasonTextBox1')))
+                reason_input.clear()
+                reason_input.send_keys('運動')
+                driver.execute_script("""
+                    arguments[0].value = '運動';
+                    arguments[0].dispatchEvent(new Event('input'));
+                    arguments[0].dispatchEvent(new Event('change'));
+                """, reason_input)
                 print('已自動填入借用原因：運動')
             except Exception as e:
-                print(f'填寫借用原因失敗: {e}')
+                print(f'用 id 找不到借用原因欄位: {e}')
+                # 嘗試用 placeholder
+                try:
+                    inputs = driver.find_elements(By.XPATH, "//input[@type='text']")
+                    for inp in inputs:
+                        ph = inp.get_attribute('placeholder') or ''
+                        if '原因' in ph or '借用' in ph:
+                            inp.clear()
+                            inp.send_keys('運動')
+                            driver.execute_script("""
+                                arguments[0].value = '運動';
+                                arguments[0].dispatchEvent(new Event('input'));
+                                arguments[0].dispatchEvent(new Event('change'));
+                            """, inp)
+                            print('已自動填入借用原因（用 placeholder 匹配）：運動')
+                            break
+                    else:
+                        print('找不到借用原因欄位，請手動填寫')
+                except Exception as e2:
+                    print(f'用 placeholder 也找不到借用原因欄位: {e2}')
             # 再等待1秒後自動按下「確定」
             time.sleep(1)
             try:
@@ -236,13 +278,14 @@ try:
             except Exception as e:
                 print(f'找不到「確定」按鈕或點擊失敗: {e}')
             break
-        elif '驗證碼' in page_source and 'txtCaptchaValue' in page_source:
-            print('驗證碼錯誤，重試...')
-            continue
         else:
+            with open('result_debug.html', 'w', encoding='utf-8') as f:
+                f.write(driver.page_source)
+            print('已存檔 result_debug.html，請手動檢查內容')
             print('請手動檢查預約結果')
             break
     else:
         print('多次嘗試後仍未成功，請手動輸入驗證碼或檢查流程')
 finally:
+    input('流程結束，請手動檢查網頁，按 Enter 關閉瀏覽器...')
     driver.quit()
